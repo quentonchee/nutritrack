@@ -63,6 +63,7 @@ export function computePlan(p) {
     goals[id] = {
       id,
       ...g,
+      adj,
       kcal,
       deltaPct: Math.round(adj * 100),
       weeklyKg: (dailyDelta * 7) / KCAL_PER_KG_FAT,

@@ -1,6 +1,7 @@
-import { ACTIVITY_LEVELS, GOALS, INTENSITIES, computePlan, isProfileComplete, navyBodyFat } from './calc.js';
+import { ACTIVITY_LEVELS, GOALS, INTENSITIES, computePlan, isProfileComplete, macrosFor, navyBodyFat } from './calc.js';
 import { FOODS } from './foods.js';
 import { PROVIDERS, CLAUDE_MODELS, analyzeMeal, resizeImage } from './ai.js';
+import { DEFAULT_REMINDERS, buildIcs, dueReminders, notificationsSupported, notify, requestPermission } from './reminders.js';
 
 /* =========================================================
    Stockage local (tout reste sur ton téléphone)
@@ -19,8 +20,11 @@ const DEFAULT_STATE = {
     provider: 'gemini',
     keys: { gemini: '', claude: '' },
     models: { gemini: PROVIDERS.gemini.defaultModel, claude: PROVIDERS.claude.defaultModel },
+    reminders: DEFAULT_REMINDERS,
+    useActive: true,
   },
   days: {},
+  sent: { date: null, keys: [] },
   recents: [],
   ui: { installTipHidden: false },
 };
@@ -41,6 +45,12 @@ function load() {
         ...s.settings,
         keys: { ...DEFAULT_STATE.settings.keys, ...s.settings?.keys },
         models: { ...DEFAULT_STATE.settings.models, ...s.settings?.models },
+        reminders: {
+          ...DEFAULT_REMINDERS,
+          ...s.settings?.reminders,
+          water: { ...DEFAULT_REMINDERS.water, ...s.settings?.reminders?.water },
+          meals: Object.fromEntries(Object.entries(DEFAULT_REMINDERS.meals).map(([k, v]) => [k, { ...v, ...s.settings?.reminders?.meals?.[k] }])),
+        },
       },
       ui: { ...DEFAULT_STATE.ui, ...s.ui },
     };
@@ -71,7 +81,7 @@ const round = (n) => Math.round(Number(n) || 0);
 const fmt = (n) => round(n).toLocaleString('fr-FR');
 const fmt1 = (n) => (Math.round(n * 10) / 10).toLocaleString('fr-FR');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null; };
+const num = (v) => { const n = parseFloat(String(v).replace(/[\s\u00a0\u202f]/g, '').replace(',', '.')); return Number.isFinite(n) ? n : null; };
 
 const ICON = {
   left: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
@@ -97,19 +107,32 @@ function currentPlan() {
   return isProfileComplete(state.profile) ? computePlan(state.profile) : null;
 }
 
+const planTarget = (plan) => ({ kcal: plan.target.kcal, ...plan.target.macros, bmr: plan.bmr, adj: plan.target.adj, goal: plan.target.id });
+
 // Objectif du jour : figé au moment où on a commencé à remplir la journée (pour garder un historique juste).
-function targetFor(date) {
+function baseTargetFor(date) {
   const d = state.days[date];
-  const plan = currentPlan();
   if (d?.target) return d.target;
-  return plan ? { kcal: plan.target.kcal, ...plan.target.macros } : null;
+  const plan = currentPlan();
+  return plan ? planTarget(plan) : null;
+}
+
+// Si on a la dépense active du jour (app Santé), l'objectif devient « dynamique » :
+// métabolisme de base + 10 % (digestion) + calories actives réellement dépensées, puis ajustement sèche / masse.
+function targetFor(date) {
+  const t = baseTargetFor(date);
+  if (!t) return null;
+  const active = state.days[date]?.active;
+  if (!state.settings.useActive || active == null || !t.bmr) return t;
+  const maintenance = t.bmr * 1.1 + active;
+  const kcal = Math.round((maintenance * (1 + (t.adj || 0))) / 10) * 10;
+  return { ...t, kcal, ...macrosFor(kcal, state.profile, t.goal || 'maintain'), dynamic: true, active, maintenance: Math.round(maintenance) };
 }
 
 function snapshotTarget(date) {
   const d = dayData(date, true);
   const plan = currentPlan();
-  if (plan && date === todayIso()) d.target = { kcal: plan.target.kcal, ...plan.target.macros };
-  else if (plan && !d.target) d.target = { kcal: plan.target.kcal, ...plan.target.macros };
+  if (plan && (date === todayIso() || !d.target)) d.target = planTarget(plan);
 }
 
 function latestWeight() {
@@ -212,7 +235,8 @@ function renderToday() {
         <div class="summary-stats">
           <div class="stat"><span class="muted">Objectif</span><b>${target ? fmt(target.kcal) : '—'}</b></div>
           <div class="stat"><span class="muted">Mangé</span><b>${fmt(tot.kcal)}</b></div>
-          ${plan ? `<div class="stat"><span class="muted">Mode</span><b>${plan.target.emoji} ${plan.target.label}</b></div>` : ''}
+          ${plan ? `<div class="stat"><span class="muted">Mode</span><b>${GOALS[target?.goal || plan.target.id].emoji} ${GOALS[target?.goal || plan.target.id].label}</b></div>` : ''}
+          ${target?.dynamic ? `<div class="stat"><span class="muted">Activité</span><b>+${fmt(target.active)}</b></div>` : ''}
         </div>
       </div>
       <div class="macros">
@@ -221,6 +245,8 @@ function renderToday() {
         ${macro('f', 'Lipides', tot.fat, target?.fat)}
       </div>
     </div>
+
+    ${plan ? activityCard(day, target) : ''}
 
     ${MEALS.map((m) => {
       const list = day.entries.filter((e) => e.meal === m.id);
@@ -250,6 +276,26 @@ function renderToday() {
 
     <button class="fab" data-action="add" aria-label="Ajouter un aliment">${ICON.plus}</button>
   `;
+}
+
+function activityCard(day, target) {
+  const has = day.active != null;
+  const on = state.settings.useActive;
+  return `
+    <div class="card">
+      <div class="meal-head">
+        <h3>🔥 Calories dépensées</h3>
+        <button class="btn small" data-action="open-activity" style="padding:6px 12px">${has ? 'Modifier' : 'Ajouter'}</button>
+      </div>
+      ${has ? `
+        <div class="kv" style="margin-top:10px">
+          <span>Activité (app Santé)</span><b>${fmt(day.active)} kcal</b>
+          ${target?.dynamic ? `<span>Dépense totale estimée</span><b>${fmt(target.maintenance)} kcal</b>` : ''}
+        </div>
+        ${target?.dynamic ? '<p class="small muted" style="margin:8px 0 0">Ton objectif du jour s\'adapte à ton activité réelle.</p>' : ''}
+        ${!on ? '<p class="small muted" style="margin:8px 0 0">L\'ajustement automatique est désactivé (Profil).</p>' : ''}`
+      : `<p class="small muted" style="margin:8px 0 0">Importe tes calories actives depuis l'app Santé pour adapter ton objectif à ce que tu as vraiment bougé.</p>`}
+    </div>`;
 }
 
 function entryRow(e) {
@@ -606,6 +652,140 @@ function openEdit(id) {
   `);
 }
 
+/* ---------- Dépense active (app Santé) ---------- */
+const SHORTCUT_NAME = 'NutriTrack Santé';
+
+// Accepte « 452 », « 452,7 kcal », « active=452 »…
+function parseHealthText(text) {
+  const t = String(text || '');
+  const m = t.match(/active\s*[=:]\s*([\d\s\u00a0\u202f.,]+)/i) || t.match(/([\d][\d\s\u00a0\u202f]*[.,]?\d*)/);
+  const v = m ? num(m[1]) : null;
+  return v != null && v >= 0 && v < 10000 ? Math.round(v) : null;
+}
+
+function setActive(date, kcal) {
+  const d = dayData(date, true);
+  if (kcal == null) delete d.active;
+  else d.active = kcal;
+  save();
+  render();
+}
+
+function openActivity() {
+  const d = dayData(ui.date);
+  openSheet(`
+    <h2>🔥 Calories actives · ${esc(dateLabel(ui.date))}</h2>
+    <label class="field"><span>Calories actives dépensées (kcal)</span>
+      <input class="input" id="act-val" inputmode="decimal" value="${d.active ?? ''}" placeholder="Ex : 520"></label>
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn" data-action="paste-activity">📋 Coller</button>
+      ${isIos() ? '<button class="btn" data-action="run-shortcut">⚡ Raccourci Santé</button>' : ''}
+    </div>
+    <div class="btn-row">
+      ${d.active != null ? '<button class="btn danger" data-action="clear-activity">Effacer</button>' : ''}
+      <button class="btn primary" data-action="save-activity">Enregistrer</button>
+    </div>
+    <p class="small muted">Dans l'app Santé de l'iPhone : <b>Parcourir → Activité → Énergie active</b> (le total du jour). Sur Android : Google Fit, Samsung Health… (calories d'activité).</p>
+    <details class="help">
+      <summary>⚡ Importer automatiquement depuis Apple Santé</summary>
+      <div class="small">
+        <p class="muted" style="margin:0 0 8px">Apple ne laisse pas les web apps lire Santé directement. On crée donc un raccourci (une seule fois) qui copie ta dépense du jour, puis tu la colles ici.</p>
+        <ol style="padding-left:18px;margin:0;display:grid;gap:6px">
+          <li>Ouvre l'app <b>Raccourcis</b> → <b>+</b> (nouveau raccourci).</li>
+          <li>Renomme-le exactement : <b>${SHORTCUT_NAME}</b></li>
+          <li>Ajoute l'action <b>« Rechercher des échantillons de santé »</b> : Type = <b>Énergie active</b>, puis ajoute le filtre <b>Date de début</b> → <b>est aujourd'hui</b>.</li>
+          <li>Ajoute <b>« Calculer les statistiques »</b> → <b>Somme</b>.</li>
+          <li>Ajoute <b>« Copier dans le presse-papiers »</b>.</li>
+          <li>Lance-le une fois et autorise l'accès à Santé.</li>
+        </ol>
+        <p class="muted" style="margin:8px 0 0">Ensuite : touche <b>⚡ Raccourci Santé</b>, reviens dans NutriTrack (bouton ◀ en haut à gauche) et touche <b>📋 Coller</b>.</p>
+      </div>
+    </details>
+  `);
+}
+
+async function pasteActivity() {
+  try {
+    const text = await navigator.clipboard.readText();
+    const v = parseHealthText(text);
+    if (v == null) { toast('Aucun nombre trouvé dans le presse-papiers.'); return; }
+    const input = $('#act-val');
+    if (input) input.value = v;
+    toast(`${fmt(v)} kcal collées — touche Enregistrer`);
+  } catch {
+    toast('Collage refusé : appuie longuement dans le champ puis « Coller ».');
+  }
+}
+
+/* ---------- Rappels ---------- */
+function setRem(path, value) {
+  const keys = path.split('.');
+  let o = state.settings.reminders;
+  for (const k of keys.slice(0, -1)) o = o[k];
+  o[keys.at(-1)] = value;
+  save();
+}
+
+async function onReminderInput(el) {
+  const path = el.dataset.rem;
+  const value = el.type === 'checkbox' ? el.checked : el.value;
+  if (path === 'enabled' && value) {
+    const perm = await requestPermission();
+    if (perm !== 'granted') {
+      el.checked = false;
+      toast(perm === 'unsupported' ? 'Notifications indisponibles ici : utilise le Calendrier.' : 'Notifications refusées.');
+      setRem('enabled', false);
+      renderProfile();
+      return;
+    }
+    toast('Rappels activés ✅');
+  }
+  setRem(path, path === 'water.everyMin' ? Number(value) : value);
+  checkReminders();
+}
+
+function checkReminders() {
+  const cfg = state.settings.reminders;
+  if (!cfg.enabled) return;
+  const today = todayIso();
+  if (state.sent.date !== today) state.sent = { date: today, keys: [] };
+  const day = dayData(today);
+  const plan = currentPlan();
+  const due = dueReminders(cfg, {
+    now: new Date(),
+    meals: MEALS,
+    loggedMeals: new Set(day.entries.map((e) => e.meal)),
+    waterCount: day.water || 0,
+    waterGoal: plan ? Math.ceil(plan.waterL / 0.25) : 8,
+    sent: new Set(state.sent.keys),
+  });
+  if (!due.length) return;
+  for (const r of due) {
+    notify(r.title, r.body, r.key);
+    state.sent.keys.push(r.key);
+  }
+  save();
+}
+
+function exportIcs() {
+  const ics = buildIcs(state.settings.reminders, MEALS);
+  if (!ics.includes('BEGIN:VEVENT')) { toast('Active au moins un rappel (eau ou repas).'); return; }
+  const file = new File([ics], 'nutritrack-rappels.ics', { type: 'text/calendar' });
+  // Sur iPhone, ouvrir le fichier .ics propose directement « Ajouter tout » au Calendrier.
+  if (isIos()) {
+    const url = URL.createObjectURL(file);
+    window.location.href = url;
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = file.name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('Fichier téléchargé : ouvre-le pour l\'ajouter à ton agenda.');
+}
+
 /* =========================================================
    Vue : Calendrier
    ========================================================= */
@@ -818,6 +998,20 @@ function renderProfile() {
       <button class="btn block" style="margin-top:12px" data-action="save-ai">Enregistrer</button>
     </div>
 
+    ${remindersCard()}
+
+    <div class="card">
+      <h2>🔥 Dépense réelle (app Santé)</h2>
+      <label class="row small" style="gap:10px">
+        <input type="checkbox" data-action="toggle-active" ${state.settings.useActive ? 'checked' : ''}>
+        <span>Adapter mon objectif du jour à mes calories actives</span>
+      </label>
+      <p class="small muted" style="margin:10px 0 0">Quand tu importes ta dépense active du jour (Apple Santé, montre…), ton objectif devient :
+        métabolisme de base + 10 % + calories actives, puis l'ajustement sèche / prise de masse.
+        Sans import, on garde le calcul classique avec ton niveau d'activité.</p>
+      <button class="btn block" style="margin-top:12px" data-action="open-activity">Importer la dépense du jour</button>
+    </div>
+
     <div class="card">
       <h2>💾 Mes données</h2>
       <p class="small muted" style="margin:0 0 10px">Tout est enregistré sur cet appareil. Exporte régulièrement une sauvegarde pour ne rien perdre (changement de téléphone, nettoyage du navigateur…).</p>
@@ -831,6 +1025,49 @@ function renderProfile() {
   `;
   renderPlanResults();
   $('#import-file').addEventListener('change', importData);
+}
+
+const isIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+
+function remindersCard() {
+  const r = state.settings.reminders;
+  const perm = notificationsSupported() ? Notification.permission : 'unsupported';
+  return `
+    <div class="card" id="reminders">
+      <h2>🔔 Rappels</h2>
+      <label class="row small" style="gap:10px">
+        <input type="checkbox" data-rem="enabled" ${r.enabled ? 'checked' : ''}>
+        <span>Activer les notifications de l'app</span>
+      </label>
+      ${perm === 'denied' ? '<div class="note warn">Les notifications sont bloquées. Autorise-les dans les réglages du téléphone (Réglages → Notifications → NutriTrack).</div>' : ''}
+      ${perm === 'unsupported' ? `<div class="note warn">${isIos() && !isStandalone() ? 'Sur iPhone, les notifications ne marchent que si l\'app est installée sur l\'écran d\'accueil.' : 'Ce navigateur ne gère pas les notifications.'} Utilise plutôt le bouton Calendrier ci-dessous.</div>` : ''}
+
+      <h3 style="margin:16px 0 8px">💧 Eau</h3>
+      <label class="row small" style="gap:10px;margin-bottom:8px"><input type="checkbox" data-rem="water.on" ${r.water.on ? 'checked' : ''}><span>Me rappeler de boire</span></label>
+      <div class="grid2" style="grid-template-columns:1fr 1fr 1fr">
+        <label class="field"><span>De</span><input class="input" type="time" data-rem="water.start" value="${r.water.start}"></label>
+        <label class="field"><span>À</span><input class="input" type="time" data-rem="water.end" value="${r.water.end}"></label>
+        <label class="field"><span>Fréquence</span>
+          <select class="input" data-rem="water.everyMin">${[60, 90, 120, 180].map((m) => `<option value="${m}" ${Number(r.water.everyMin) === m ? 'selected' : ''}>${m < 120 ? m + ' min' : m / 60 + ' h'}</option>`).join('')}</select></label>
+      </div>
+
+      <h3 style="margin:8px 0 8px">🍽️ Repas</h3>
+      ${MEALS.map((m) => `
+        <div class="row" style="margin-bottom:8px">
+          <label class="row small grow" style="gap:10px"><input type="checkbox" data-rem="meals.${m.id}.on" ${r.meals[m.id].on ? 'checked' : ''}><span>${m.emoji} ${m.label}</span></label>
+          <input class="input" type="time" style="width:120px" data-rem="meals.${m.id}.time" value="${r.meals[m.id].time}">
+        </div>`).join('')}
+      <p class="small muted" style="margin:4px 0 0">Le rappel repas n'est pas envoyé si tu as déjà noté ce repas. Le rappel eau s'arrête quand ton objectif d'eau est atteint.</p>
+      <button class="btn block" style="margin-top:12px" data-action="test-notif">Tester une notification</button>
+
+      <div class="note" style="margin-top:14px">
+        <b>📅 Rappels même quand l'app est fermée</b><br>
+        Une web app ne peut pas se réveiller toute seule. Pour des rappels 100 % fiables, ajoute-les à l'app Calendrier de ton téléphone :
+        des alertes quotidiennes aux heures choisies ci-dessus.
+        <button class="btn primary block" style="margin-top:10px" data-action="export-ics">Ajouter au Calendrier</button>
+      </div>
+    </div>`;
 }
 
 function renderPlanResults() {
@@ -1001,6 +1238,23 @@ const actions = {
     render(); toast('Données effacées');
   },
   install: async () => { if (deferredInstall) { deferredInstall.prompt(); deferredInstall = null; render(); } },
+  'open-activity': () => openActivity(),
+  'paste-activity': () => pasteActivity(),
+  'run-shortcut': () => { ui.awaitingHealth = true; window.location.href = `shortcuts://run-shortcut?name=${encodeURIComponent(SHORTCUT_NAME)}`; },
+  'save-activity': () => {
+    const raw = $('#act-val').value.trim();
+    const v = raw === '' ? null : parseHealthText(raw);
+    if (raw !== '' && v == null) { toast('Valeur invalide.'); return; }
+    setActive(ui.date, v); closeSheet(); toast(v == null ? 'Dépense effacée' : `🔥 ${fmt(v)} kcal actives enregistrées`);
+  },
+  'clear-activity': () => { setActive(ui.date, null); closeSheet(); toast('Dépense effacée'); },
+  'toggle-active': (el) => { state.settings.useActive = el.checked; save(); toast(el.checked ? 'Objectif dynamique activé' : 'Objectif dynamique désactivé'); },
+  'test-notif': async () => {
+    const perm = await requestPermission();
+    if (perm !== 'granted') { toast(perm === 'unsupported' ? 'Notifications indisponibles ici.' : 'Notifications refusées.'); return; }
+    notify('💧 Test NutriTrack', 'Les notifications fonctionnent !', 'test');
+  },
+  'export-ics': () => exportIcs(),
   'hide-install': () => { state.ui.installTipHidden = true; save(); render(); },
 };
 
@@ -1016,6 +1270,9 @@ document.addEventListener('input', (e) => {
   if (e.target.matches('[data-add-meal]')) ui.addMeal = e.target.value;
 });
 document.addEventListener('change', (e) => {
+  if (e.target.dataset.rem) onReminderInput(e.target);
+});
+document.addEventListener('change', (e) => {
   if (e.target.dataset.profile === 'activity') onProfileInput(e);
 });
 $('#sheet-backdrop').addEventListener('click', closeSheet);
@@ -1027,7 +1284,12 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   const t = todayIso();
   if (t !== lastToday) { if (ui.date === lastToday) ui.date = t; lastToday = t; render(); }
+  checkReminders();
+  // Retour après le raccourci Santé : on propose directement de coller la valeur.
+  if (ui.awaitingHealth) { ui.awaitingHealth = false; ui.date = t; if (ui.tab !== 'today') showTab('today'); openActivity(); }
 });
+
+
 
 /* ---------- Installation (PWA) ---------- */
 let deferredInstall = null;
@@ -1036,5 +1298,18 @@ window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); defe
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
+
+// Import via lien : …/index.html?active=520 (pratique depuis un raccourci ou sur Android).
+(function importFromUrl() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('active')) return;
+  const v = parseHealthText(params.get('active'));
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') || '') ? params.get('date') : todayIso();
+  if (v != null) { setActive(date, v); setTimeout(() => toast(`🔥 ${fmt(v)} kcal actives importées`), 300); }
+  history.replaceState(null, '', location.pathname);
+})();
+
+setInterval(checkReminders, 60 * 1000);
+checkReminders();
 
 render();

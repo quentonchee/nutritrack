@@ -81,6 +81,29 @@ La clé API reste uniquement sur ton téléphone. Elle n'est **jamais** incluse 
 
 ---
 
+## 🔔 Rappels (eau et repas)
+
+Dans **Profil → Rappels**, choisis tes heures de repas et la fréquence des rappels d'eau.
+
+- **Notifications de l'app** : coche « Activer les notifications ». Sur iPhone, ça ne marche que si l'app est installée sur l'écran d'accueil. Attention : une web app **ne peut pas envoyer de notification quand elle est fermée** (il faudrait un serveur payant).
+- **Rappels fiables, même app fermée** : touche **« Ajouter au Calendrier »**. Tes rappels deviennent des événements quotidiens avec alerte dans l'app Calendrier du téléphone. Si tu changes tes horaires, supprime l'ancien calendrier « NutriTrack » puis ajoute-le à nouveau.
+
+## 🔥 Calories dépensées (app Santé)
+
+Apple ne permet pas à une web app de lire l'app Santé directement. On passe donc par l'app **Raccourcis**, à configurer une seule fois :
+
+1. App **Raccourcis** → **+** → nomme le raccourci exactement **NutriTrack Santé**.
+2. Action **« Rechercher des échantillons de santé »** : Type = **Énergie active**, filtre **Date de début** → **est aujourd'hui**.
+3. Action **« Calculer les statistiques »** → **Somme**.
+4. Action **« Copier dans le presse-papiers »**.
+
+Ensuite, dans NutriTrack : carte **🔥 Calories dépensées** → **⚡ Raccourci Santé**. Reviens dans l'app (◀ en haut à gauche), puis touche **📋 Coller** et **Enregistrer**.
+Tu peux aussi taper le chiffre à la main (Santé → Parcourir → Activité → Énergie active), ou sur Android le recopier depuis Google Fit / Samsung Health.
+
+Avec ta dépense du jour, l'objectif devient **dynamique** : métabolisme de base + 10 % (digestion) + calories actives, puis −/+ % selon ton objectif (sèche, prise de masse). Tu peux désactiver ça dans **Profil → Dépense réelle**.
+
+---
+
 ## 🧮 Comment sont faits les calculs
 
 | Élément | Méthode |

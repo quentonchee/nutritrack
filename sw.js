@@ -1,6 +1,6 @@
 // Service worker : met l'app en cache pour qu'elle marche hors ligne.
 // Incrémente VERSION à chaque mise à jour pour forcer le rafraîchissement.
-const VERSION = 'nutritrack-v1';
+const VERSION = 'nutritrack-v2';
 const SHELL = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const SHELL = [
   './js/foods.js',
   './js/calc.js',
   './js/ai.js',
+  './js/reminders.js',
   './js/app.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
@@ -40,5 +41,16 @@ self.addEventListener('fetch', (e) => {
         return res;
       })
       .catch(() => caches.match(e.request).then((r) => r || caches.match('./index.html')))
+  );
+});
+
+// Toucher une notification ouvre (ou ramène au premier plan) l'app.
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const client = list.find((c) => 'focus' in c);
+      return client ? client.focus() : self.clients.openWindow('./index.html');
+    })
   );
 });
