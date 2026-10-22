@@ -273,3 +273,11 @@ details.help summary { cursor: pointer; color: var(--accent); font-size: 14px; f
 .install-tip .x { margin-left: auto; border: 0; background: transparent; color: var(--muted); font-size: 18px; padding: 0 4px; }
 .empty-state { text-align: center; padding: 28px 12px; }
 .empty-state .emoji { font-size: 40px; }
+
+/* ---------- Puces (shakers) ---------- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  border: 1px solid var(--border); background: var(--surface-2); border-radius: 99px;
+  padding: 7px 12px; font-size: 13px; font-weight: 600; color: var(--muted);
+}
+.chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }

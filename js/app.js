@@ -1,5 +1,5 @@
 import { ACTIVITY_LEVELS, GOALS, INTENSITIES, computePlan, isProfileComplete, macrosFor, navyBodyFat } from './calc.js';
-import { FOODS } from './foods.js';
+import { FOODS, LIQUIDS, SUPPLEMENTS } from './foods.js';
 import { PROVIDERS, CLAUDE_MODELS, analyzeMeal, resizeImage } from './ai.js';
 import { DEFAULT_REMINDERS, buildIcs, dueReminders, notificationsSupported, notify, requestPermission } from './reminders.js';
 
@@ -13,6 +13,9 @@ const MEALS = [
   { id: 'snack', label: 'Collation', emoji: '🍎' },
   { id: 'dinner', label: 'Dîner', emoji: '🌙' },
 ];
+
+// Section à part pour les shakers / compléments (pas de rappel associé).
+const SHAKE = { id: 'shake', label: 'Shakers & compléments', emoji: '🥤' };
 
 const DEFAULT_STATE = {
   profile: { sex: 'male', age: null, heightCm: null, weightKg: null, bodyFat: null, activity: 'moderate', goal: 'maintain', intensity: 'moderate' },
@@ -262,6 +265,8 @@ function renderToday() {
       </div>`;
     }).join('')}
 
+    ${shakeCard(day)}
+
     <div class="card">
       <div class="meal-head" style="margin-bottom:10px">
         <h3>💧 Eau</h3>
@@ -296,6 +301,102 @@ function activityCard(day, target) {
         ${!on ? '<p class="small muted" style="margin:8px 0 0">L\'ajustement automatique est désactivé (Profil).</p>' : ''}`
       : `<p class="small muted" style="margin:8px 0 0">Importe tes calories actives depuis l'app Santé pour adapter ton objectif à ce que tu as vraiment bougé.</p>`}
     </div>`;
+}
+
+function shakeCard(day) {
+  const list = day.entries.filter((e) => e.meal === SHAKE.id);
+  const kcal = list.reduce((s, e) => s + e.kcal, 0);
+  const protein = list.reduce((s, e) => s + e.protein, 0);
+  const last = state.settings.lastShake;
+  return `
+    <div class="card">
+      <div class="meal-head">
+        <h3>${SHAKE.emoji} ${SHAKE.label}</h3>
+        <span class="kcal">${fmt(kcal)} kcal</span>
+      </div>
+      ${list.length ? `<ul class="entries">${list.map(entryRow).join('')}</ul>
+        <p class="small muted" style="margin:4px 0 0">Protéines apportées : <b>${fmt(protein)} g</b></p>` : ''}
+      <button class="add-btn" data-action="open-shake">+ Ajouter un shaker / complément</button>
+      ${last ? `<button class="add-btn" data-action="shake-repeat" style="border-style:solid">↻ Refaire mon dernier shaker · ${fmt(shakeValues(last).kcal)} kcal</button>` : ''}
+    </div>`;
+}
+
+/* ---------- Shakers & compléments ---------- */
+function shakeValues(d) {
+  const prod = SUPPLEMENTS.find((x) => x.id === d.productId) || SUPPLEMENTS[0];
+  const liq = LIQUIDS.find((x) => x.id === d.liquidId) || LIQUIDS[0];
+  const g = Math.max(0, Number(d.grams) || 0);
+  const ml = prod.solid ? 0 : Math.max(0, Number(d.ml) || 0);
+  const r = g / 100;
+  const l = ml / 100;
+  const name = prod.solid
+    ? `${prod.n} ${fmt(g)} g`
+    : `${prod.id === 'creatine' ? '' : 'Shaker '}${prod.n} ${fmt(g)} g${ml ? (liq.id === 'water' ? ' (eau)' : ` + ${liq.n.toLowerCase()} ${fmt(ml)} ml`) : ''}`;
+  return {
+    name,
+    grams: round(g),
+    kcal: round(prod.k * r + liq.k * l),
+    protein: round(prod.p * r + liq.p * l),
+    carbs: round(prod.c * r + liq.c * l),
+    fat: round(prod.f * r + liq.f * l),
+  };
+}
+
+function openShake() {
+  const last = state.settings.lastShake;
+  ui.shake = last ? { ...last } : { productId: 'whey', grams: 30, liquidId: 'water', ml: 300 };
+  renderShakeSheet();
+}
+
+function renderShakeSheet() {
+  const d = ui.shake;
+  const prod = SUPPLEMENTS.find((x) => x.id === d.productId);
+  openSheet(`
+    <h2>🥤 Shaker · ${esc(dateLabel(ui.date))}</h2>
+    <div class="field"><span>Produit</span>
+      <div class="chips">${SUPPLEMENTS.map((x) => `<button class="chip ${x.id === d.productId ? 'on' : ''}" data-action="shake-product" data-id="${x.id}">${x.emoji} ${x.n}</button>`).join('')}</div>
+    </div>
+    <label class="field"><span>Quantité ${prod.solid ? '' : 'de poudre '}(g)</span>
+      <input class="input" id="sh-g" inputmode="decimal" value="${d.grams}"></label>
+    <div class="chips" style="margin:-4px 0 12px">
+      ${[1, 1.5, 2].map((n) => `<button class="chip ${Number(d.grams) === prod.dose * n ? 'on' : ''}" data-action="shake-dose" data-n="${n}">${n === 1 ? '1 dose' : `${String(n).replace('.', ',')} doses`} · ${fmt(prod.dose * n)} g</button>`).join('')}
+    </div>
+    ${prod.solid ? '' : `
+    <div class="grid2">
+      <label class="field"><span>Liquide</span>
+        <select class="input" id="sh-liq">${LIQUIDS.map((x) => `<option value="${x.id}" ${x.id === d.liquidId ? 'selected' : ''}>${x.n}</option>`).join('')}</select></label>
+      <label class="field"><span>Quantité (ml)</span><input class="input" id="sh-ml" inputmode="decimal" value="${d.ml}"></label>
+    </div>`}
+    <div class="goal on" style="margin:4px 0 0">
+      <div class="kcal tnum" id="sh-kcal"></div>
+      <div class="detail" id="sh-macros"></div>
+    </div>
+    <button class="btn primary block" style="margin-top:14px" data-action="shake-add">Ajouter</button>
+  `);
+  drawShakePreview();
+}
+
+function readShakeForm() {
+  const d = ui.shake;
+  d.grams = num($('#sh-g')?.value) ?? 0;
+  if ($('#sh-liq')) d.liquidId = $('#sh-liq').value;
+  if ($('#sh-ml')) d.ml = num($('#sh-ml').value) ?? 0;
+  return d;
+}
+
+function drawShakePreview() {
+  const v = shakeValues(readShakeForm());
+  $('#sh-kcal').innerHTML = `${fmt(v.kcal)} <small>kcal</small>`;
+  $('#sh-macros').textContent = `Protéines ${fmt(v.protein)} g · Glucides ${fmt(v.carbs)} g · Lipides ${fmt(v.fat)} g`;
+}
+
+function addShake(draft) {
+  const v = shakeValues(draft);
+  if (!v.grams) { toast('Indique la quantité en grammes.'); return; }
+  // On garde le dernier vrai shaker pour le bouton « Refaire » (pas la créatine seule).
+  if (draft.productId !== 'creatine') state.settings.lastShake = { ...draft };
+  ui.addMeal = SHAKE.id;
+  addEntries([{ ...v, shake: { ...draft } }]);
 }
 
 function entryRow(e) {
@@ -355,7 +456,7 @@ function openAdd(meal) {
 }
 
 function mealSelect(selected, attr = 'data-add-meal') {
-  return `<select class="input" ${attr}>${MEALS.map((m) => `<option value="${m.id}" ${m.id === selected ? 'selected' : ''}>${m.emoji} ${m.label}</option>`).join('')}</select>`;
+  return `<select class="input" ${attr}>${[...MEALS, SHAKE].map((m) => `<option value="${m.id}" ${m.id === selected ? 'selected' : ''}>${m.emoji} ${m.label}</option>`).join('')}</select>`;
 }
 
 function renderAddSheet() {
@@ -422,7 +523,7 @@ function addEntries(items) {
 }
 
 function rememberRecent(it) {
-  if (it.fromPhoto) return;
+  if (it.fromPhoto || it.shake) return;
   const key = it.name.toLowerCase();
   state.recents = [{ name: it.name, kcal: it.kcal, protein: it.protein, carbs: it.carbs, fat: it.fat, grams: it.grams || 0 },
     ...state.recents.filter((r) => r.name.toLowerCase() !== key)].slice(0, 15);
@@ -1239,6 +1340,22 @@ const actions = {
   },
   install: async () => { if (deferredInstall) { deferredInstall.prompt(); deferredInstall = null; render(); } },
   'open-activity': () => openActivity(),
+  'open-shake': () => openShake(),
+  'shake-product': (el) => {
+    readShakeForm();
+    const prod = SUPPLEMENTS.find((x) => x.id === el.dataset.id);
+    ui.shake.productId = prod.id;
+    ui.shake.grams = prod.dose;
+    if (prod.id === 'creatine') { ui.shake.liquidId = 'water'; ui.shake.ml = 250; }
+    renderShakeSheet();
+  },
+  'shake-dose': (el) => {
+    readShakeForm();
+    ui.shake.grams = SUPPLEMENTS.find((x) => x.id === ui.shake.productId).dose * Number(el.dataset.n);
+    renderShakeSheet();
+  },
+  'shake-add': () => addShake(readShakeForm()),
+  'shake-repeat': () => addShake({ ...state.settings.lastShake }),
   'paste-activity': () => pasteActivity(),
   'run-shortcut': () => { ui.awaitingHealth = true; window.location.href = `shortcuts://run-shortcut?name=${encodeURIComponent(SHORTCUT_NAME)}`; },
   'save-activity': () => {
@@ -1268,9 +1385,11 @@ document.addEventListener('input', (e) => {
   if (e.target.dataset.profile) onProfileInput(e);
   if (e.target.dataset.ai) refreshAiTotal();
   if (e.target.matches('[data-add-meal]')) ui.addMeal = e.target.value;
+  if (e.target.matches('#sh-g, #sh-ml')) drawShakePreview();
 });
 document.addEventListener('change', (e) => {
   if (e.target.dataset.rem) onReminderInput(e.target);
+  if (e.target.id === 'sh-liq') drawShakePreview();
 });
 document.addEventListener('change', (e) => {
   if (e.target.dataset.profile === 'activity') onProfileInput(e);

@@ -1,6 +1,6 @@
 // Service worker : met l'app en cache pour qu'elle marche hors ligne.
 // Incrémente VERSION à chaque mise à jour pour forcer le rafraîchissement.
-const VERSION = 'nutritrack-v2';
+const VERSION = 'nutritrack-v3';
 const SHELL = [
   './',
   './index.html',

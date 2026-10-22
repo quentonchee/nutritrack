@@ -71,3 +71,25 @@ export const FOODS = [
   { n: 'Vin rouge', k: 85, p: 0.1, c: 2.6, f: 0, unit: 150 },
   { n: 'Café au lait', k: 30, p: 1.6, c: 2.5, f: 1.5, unit: 200 },
 ];
+
+// Shakers & compléments. Valeurs pour 100 g de poudre ; `dose` = une dose type en grammes.
+export const SUPPLEMENTS = [
+  { id: 'whey', n: 'Whey', emoji: '🥛', k: 380, p: 78, c: 7, f: 5, dose: 30 },
+  { id: 'isolate', n: 'Whey isolate', emoji: '💎', k: 370, p: 88, c: 2, f: 1, dose: 30 },
+  { id: 'casein', n: 'Caséine', emoji: '🌙', k: 360, p: 78, c: 6, f: 2, dose: 30 },
+  { id: 'vegan', n: 'Protéine végétale', emoji: '🌱', k: 380, p: 75, c: 6, f: 7, dose: 30 },
+  { id: 'gainer', n: 'Gainer', emoji: '💪', k: 380, p: 18, c: 70, f: 3, dose: 100 },
+  { id: 'creatine', n: 'Créatine', emoji: '⚡', k: 0, p: 0, c: 0, f: 0, dose: 5 },
+  { id: 'bar', n: 'Barre protéinée', emoji: '🍫', k: 350, p: 33, c: 35, f: 10, dose: 60, solid: true },
+];
+
+// Liquides pour le shaker. Valeurs pour 100 ml.
+export const LIQUIDS = [
+  { id: 'water', n: 'Eau', k: 0, p: 0, c: 0, f: 0 },
+  { id: 'semi', n: 'Lait demi-écrémé', k: 46, p: 3.3, c: 4.8, f: 1.6 },
+  { id: 'skim', n: 'Lait écrémé', k: 35, p: 3.4, c: 5, f: 0.1 },
+  { id: 'whole', n: 'Lait entier', k: 64, p: 3.2, c: 4.7, f: 3.6 },
+  { id: 'almond', n: 'Lait d\'amande', k: 24, p: 0.5, c: 3, f: 1.1 },
+  { id: 'oat', n: 'Lait d\'avoine', k: 45, p: 1, c: 6.5, f: 1.5 },
+  { id: 'soy', n: 'Lait de soja', k: 39, p: 3.3, c: 2.5, f: 1.8 },
+];
